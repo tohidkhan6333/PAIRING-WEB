@@ -3,16 +3,10 @@ import fs from 'fs-extra';
 import pino from 'pino';
 import QRCode from 'qrcode';
 import {
-    makeWASocket,
-    useMultiFileAuthState,
-    makeCacheableSignalKeyStore,
-    Browsers,
-    jidNormalizedUser,
-    fetchLatestBaileysVersion,
-    delay,
-    DisconnectReason
+    makeWASocket, useMultiFileAuthState, makeCacheableSignalKeyStore,
+    Browsers, jidNormalizedUser, fetchLatestBaileysVersion, delay, DisconnectReason
 } from '@whiskeysockets/baileys';
-import uploadToPastebin from './Paste.js';
+import { upload as megaUpload } from './mega.js';
 
 const router = express.Router();
 const MAX_RECONNECT_ATTEMPTS = 3;
@@ -42,6 +36,13 @@ async function removeFile(FilePath) {
         console.error('Error removing file:', e);
         return false;
     }
+}
+
+function randomMegaId(len = 6, numLen = 4) {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let out = '';
+    for (let i = 0; i < len; i++) out += chars.charAt(Math.floor(Math.random() * chars.length));
+    return `${out}${Math.floor(Math.random() * Math.pow(10, numLen))}`;
 }
 
 router.get('/', async (req, res) => {
@@ -178,16 +179,18 @@ router.get('/', async (req, res) => {
                     try {
                         const credsFile = `${dirs}/creds.json`;
                         if (fs.existsSync(credsFile)) {
-                            console.log('📄 Uploading creds.json to Pastebin...');
-                            const pastebinUrl = await uploadToPastebin(credsFile, 'creds.json', 'json', '1');
-                            console.log('✅ Session uploaded to Pastebin:', pastebinUrl);
+                            console.log('📄 Uploading creds.json to MEGA...');
+                            const id = randomMegaId();
+                            const megaLink = await megaUpload(await fs.readFile(credsFile), `${id}.json`);
+                            const megaSessionId = megaLink.replace('https://mega.nz/file/', '');
+                            console.log('✅ Session uploaded to MEGA, ID:', megaSessionId);
 
                             const userJid = Object.keys(sock.authState.creds.me || {}).length > 0
                                 ? jidNormalizedUser(sock.authState.creds.me.id)
                                 : null;
 
                             if (userJid) {
-                                const msg = await sock.sendMessage(userJid, { text: pastebinUrl });
+                                const msg = await sock.sendMessage(userJid, { text: megaSessionId });
                                 await sock.sendMessage(userJid, { text: MESSAGE, quoted: msg });
                             }
 
@@ -277,18 +280,6 @@ setInterval(async () => {
         console.error('Error in cleanup interval:', e);
     }
 }, 60000);
-
-process.on('SIGTERM', async () => {
-    console.log('🛑 SIGTERM received, cleaning up...');
-    try { await fs.remove('./qr_sessions'); } catch (e) {}
-    process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-    console.log('🛑 SIGINT received, cleaning up...');
-    try { await fs.remove('./qr_sessions'); } catch (e) {}
-    process.exit(0);
-});
 
 process.on('uncaughtException', (err) => {
     const e = String(err);
